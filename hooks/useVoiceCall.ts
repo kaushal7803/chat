@@ -29,6 +29,9 @@ export function useVoiceCall() {
   
   const pcRef = useRef<RTCPeerConnection | null>(null);
   
+  // 🚀 ENTERPRISE SHIELD: Buffer incoming ICE Candidates that arrive before setRemoteDescription completes!
+  const pendingIceCandidates = useRef<any[]>([]);
+  
   // Store physical stream entities in reactive state to decouple from DOM
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -37,18 +40,34 @@ export function useVoiceCall() {
   const [callTarget, setCallTarget] = useState<string | null>(null); 
   const [incomingCall, setIncomingCall] = useState<IncomingCallPayload | null>(null);
   
-  // Capture and present errors gracefully instead of silently failing/blinking
+  // Capture and present errors gracefully instead of silently failing
   const [callError, setCallError] = useState<string | null>(null);
 
   // Real-time Media Controls State
   const [isMuted, setIsMuted] = useState(false);
   const [isCamOff, setIsCamOff] = useState(false);
 
+  // Helper: Drains buffered ICE candidates once the description state is ready
+  const processPendingIce = useCallback(async () => {
+    if (!pcRef.current || !pcRef.current.remoteDescription) return;
+    console.log(`Draining ${pendingIceCandidates.current.length} buffered ICE candidates...`);
+    
+    while (pendingIceCandidates.current.length > 0) {
+      const candidate = pendingIceCandidates.current.shift();
+      try {
+        await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (e) {
+        console.warn("Delayed ICE candidate mount failure:", e);
+      }
+    }
+  }, []);
+
   const cleanup = useCallback(() => {
     console.log('Cleaning up WebRTC media tracks and channels...');
     
     pcRef.current?.close();
     pcRef.current = null;
+    pendingIceCandidates.current = []; // Flush buffer
     
     // Clean up and close hardware tracks reactively
     setLocalStream((prevStream) => {
@@ -172,15 +191,14 @@ export function useVoiceCall() {
         // Add captured hardware tracks to pipeline
         stream.getTracks().forEach((track) => pc.addTrack(track, stream));
         
-        // 🚀 CRITICAL FIX: If this device lacks a camera, we MUST tell WebRTC 
-        // to explicitly request incoming video! Without this, negotiation defaults to audio-only.
-        const hasVideoTrack = stream.getVideoTracks().length > 0;
-        if (!hasVideoTrack) {
-          console.log('Asymmetric call: Opening receive-only video channel...');
-          pc.addTransceiver('video', { direction: 'recvonly' });
-        }
-
-        const offer = await pc.createOffer();
+        // 🚀 UNIVERSAL COMPATIBILITY SHIELD: Pass offerToReceive flags directly to the engine.
+        // This forces the browser's built-in SDP compiler to ALWAYS negotiate both channels,
+        // naturally establishing a one-way incoming video feed even if local hardware lacks a camera!
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true,
+        });
+        
         await pc.setLocalDescription(offer);
 
         socket.emit('call:offer', {
@@ -193,7 +211,6 @@ export function useVoiceCall() {
       } catch (err: any) {
         console.error('MEDIA ACCESS ERROR:', err);
         setCallError(err.message || "Could not access camera or microphone. Verify permissions.");
-        // NOTE: We keep callState at 'calling' so the UI can display the error card!
       }
     },
     [session, socket, createPC]
@@ -237,31 +254,23 @@ export function useVoiceCall() {
       const pc = createPC(targetId);
       if (!pc) return;
       
-      // 1. APPLY REMOTE DESCRIPTION FIRST
-      // This populates transceivers inside RTCPeerConnection from the incoming offer!
+      // 1. APPLY REMOTE DESCRIPTION FIRST 
+      // Immediately populates incoming transceivers safely!
       await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.offer));
+      
+      // 🚀 SECURE HANDSHAKE: Immediately apply any ICE candidates that arrived during setRemoteDescription delay!
+      await processPendingIce();
 
       // 2. ADD LOCAL TRACKS TO RESPONSE PIPELINE
-      // The browser automatically pairs these tracks to the pre-populated transceivers.
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       
-      // 🚀 CRITICAL FIX FOR MOBILE-TO-PC ASYMMETRIC DIRECTION:
-      // Since the PC (callee) might not provide a local camera, we must find the 
-      // ALREADY EXISTING video transceiver from the offer and set it to 'recvonly'.
-      // This prevents creating a duplicate transceiver and keeps the incoming channel ACTIVE!
-      const hasLocalVideo = stream.getVideoTracks().length > 0;
-      if (!hasLocalVideo) {
-        const transceivers = pc.getTransceivers();
-        const videoTransceiver = transceivers.find(
-          (t) => t.receiver.track && t.receiver.track.kind === 'video'
-        );
-        if (videoTransceiver) {
-          console.log('Asymmetric response: Locking existing transceiver to receive-only!');
-          videoTransceiver.direction = 'recvonly';
-        }
-      }
-
-      const answer = await pc.createAnswer();
+      // 🚀 UNIVERSAL COMPATIBILITY SHIELD: Force Answer to remain open for incoming video streams
+      // using standard browser core directives instead of manual transceiver mutation!
+      const answer = await pc.createAnswer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
+      
       await pc.setLocalDescription(answer);
 
       socket.emit('call:answer', { to: targetId, answer });
@@ -270,7 +279,7 @@ export function useVoiceCall() {
       console.error('ACCEPTING MEDIA ERROR:', err);
       setCallError(err.message || "Could not access media device for incoming connection.");
     }
-  }, [incomingCall, socket, createPC]);
+  }, [incomingCall, socket, createPC, processPendingIce]);
 
   // ── Reject / End call ─────────────────────────────────────────────
   const rejectCall = useCallback(() => {
@@ -303,7 +312,10 @@ export function useVoiceCall() {
       if (pcRef.current) {
         try {
           await pcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
-          // 🚀 CRITICAL FIX: Instantly transition Caller out of "Calling..." and into the Active Viewport!
+          
+          // 🚀 SECURE HANDSHAKE: Drain the ICE candidate buffer immediately!
+          await processPendingIce();
+          
           setCallState('connected'); 
         } catch (e) {
           console.error('Failed remote answer apply:', e);
@@ -312,12 +324,19 @@ export function useVoiceCall() {
     };
 
     const handleCallIce = async ({ candidate }: any) => {
-      if (pcRef.current && candidate) {
+      if (!candidate || !pcRef.current) return;
+      
+      // 🚀 DYNAMIC ROUTING: Only apply ICE candidate directly if remoteDescription exists!
+      if (pcRef.current.remoteDescription) {
         try {
           await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (e) {
-          console.error('ICE candidate mount fail:', e);
+          console.warn('ICE candidate direct attach fail:', e);
         }
+      } else {
+        // Buffer it until the signaling handshake has stored the remote description!
+        console.log('Buffering incoming ICE candidate (Description not yet applied)...');
+        pendingIceCandidates.current.push(candidate);
       }
     };
 
@@ -334,7 +353,7 @@ export function useVoiceCall() {
       socket.off('call:rejected', cleanup);
       socket.off('call:ended', cleanup);
     };
-  }, [socket, cleanup]);
+  }, [socket, cleanup, processPendingIce]);
 
   return {
     callState,
