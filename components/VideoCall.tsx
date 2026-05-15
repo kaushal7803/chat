@@ -46,6 +46,8 @@ export default function VideoCall({
       if (localVideoRef.current.srcObject !== localStream) {
         console.log('Attaching local hardware stream to viewport');
         localVideoRef.current.srcObject = localStream;
+        // Explicitly trigger hardware playback to satisfy mobile browser security policies
+        localVideoRef.current.play().catch((e) => console.warn("Local video playback issue:", e));
       }
     }
   }, [localStream]);
@@ -55,6 +57,8 @@ export default function VideoCall({
       if (remoteVideoRef.current.srcObject !== remoteStream) {
         console.log('Attaching incoming remote stream to viewport');
         remoteVideoRef.current.srcObject = remoteStream;
+        // Explicitly trigger remote hardware playback
+        remoteVideoRef.current.play().catch((e) => console.warn("Remote video playback issue:", e));
       }
     }
   }, [remoteStream]);

@@ -6,8 +6,20 @@ import { CallState, IncomingCallPayload } from '@/types';
 
 const ICE_SERVERS = {
   iceServers: [
+    // Google's STUN servers for fast peer discovery
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    
+    // 🛡️ TURN Relay Servers to bypass cellular/corporate NAT firewalls
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp'
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    },
   ],
 };
 
