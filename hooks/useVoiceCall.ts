@@ -237,17 +237,30 @@ export function useVoiceCall() {
       const pc = createPC(targetId);
       if (!pc) return;
       
-      // Add local tracks to response pipeline
+      // 1. APPLY REMOTE DESCRIPTION FIRST
+      // This populates transceivers inside RTCPeerConnection from the incoming offer!
+      await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.offer));
+
+      // 2. ADD LOCAL TRACKS TO RESPONSE PIPELINE
+      // The browser automatically pairs these tracks to the pre-populated transceivers.
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
       
-      // 🚀 CRITICAL FIX: Ensure incoming video channel is negotiated if we lack a local camera!
-      const hasVideoTrack = stream.getVideoTracks().length > 0;
-      if (!hasVideoTrack) {
-        console.log('Asymmetric response: Configuring receive-only video pipeline...');
-        pc.addTransceiver('video', { direction: 'recvonly' });
+      // 🚀 CRITICAL FIX FOR MOBILE-TO-PC ASYMMETRIC DIRECTION:
+      // Since the PC (callee) might not provide a local camera, we must find the 
+      // ALREADY EXISTING video transceiver from the offer and set it to 'recvonly'.
+      // This prevents creating a duplicate transceiver and keeps the incoming channel ACTIVE!
+      const hasLocalVideo = stream.getVideoTracks().length > 0;
+      if (!hasLocalVideo) {
+        const transceivers = pc.getTransceivers();
+        const videoTransceiver = transceivers.find(
+          (t) => t.receiver.track && t.receiver.track.kind === 'video'
+        );
+        if (videoTransceiver) {
+          console.log('Asymmetric response: Locking existing transceiver to receive-only!');
+          videoTransceiver.direction = 'recvonly';
+        }
       }
 
-      await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.offer));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
