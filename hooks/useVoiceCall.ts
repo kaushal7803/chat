@@ -81,9 +81,13 @@ export function useVoiceCall() {
     };
 
     pc.ontrack = ({ streams }) => {
-      console.log('Received remote stream pipeline:', streams[0]);
-      // Reactive set triggers DOM connection seamlessly inside UI component
-      setRemoteStream(streams[0]);
+      console.log('Received remote stream pipeline with tracks:', streams[0]?.getTracks().length);
+      if (streams && streams[0]) {
+        // 🚀 CRITICAL FIX: Construct a fresh MediaStream wrapper around the tracks.
+        // This forces React's referential equality check to see a new object instance, 
+        // triggering a UI re-render when audio and video tracks mount sequentially!
+        setRemoteStream(new MediaStream(streams[0].getTracks()));
+      }
     };
 
     pc.onconnectionstatechange = () => {
@@ -165,7 +169,16 @@ export function useVoiceCall() {
         const pc = createPC(targetSocketId);
         if (!pc) return;
         
+        // Add captured hardware tracks to pipeline
         stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+        
+        // 🚀 CRITICAL FIX: If this device lacks a camera, we MUST tell WebRTC 
+        // to explicitly request incoming video! Without this, negotiation defaults to audio-only.
+        const hasVideoTrack = stream.getVideoTracks().length > 0;
+        if (!hasVideoTrack) {
+          console.log('Asymmetric call: Opening receive-only video channel...');
+          pc.addTransceiver('video', { direction: 'recvonly' });
+        }
 
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -224,7 +237,15 @@ export function useVoiceCall() {
       const pc = createPC(targetId);
       if (!pc) return;
       
+      // Add local tracks to response pipeline
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      
+      // 🚀 CRITICAL FIX: Ensure incoming video channel is negotiated if we lack a local camera!
+      const hasVideoTrack = stream.getVideoTracks().length > 0;
+      if (!hasVideoTrack) {
+        console.log('Asymmetric response: Configuring receive-only video pipeline...');
+        pc.addTransceiver('video', { direction: 'recvonly' });
+      }
 
       await pc.setRemoteDescription(new RTCSessionDescription(incomingCall.offer));
       const answer = await pc.createAnswer();
