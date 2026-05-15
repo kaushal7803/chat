@@ -265,9 +265,12 @@ export function useVoiceCall() {
     };
 
     const handleCallAnswer = async ({ answer }: any) => {
+      console.log('Socket: received remote answer, applying description...');
       if (pcRef.current) {
         try {
           await pcRef.current.setRemoteDescription(new RTCSessionDescription(answer));
+          // 🚀 CRITICAL FIX: Instantly transition Caller out of "Calling..." and into the Active Viewport!
+          setCallState('connected'); 
         } catch (e) {
           console.error('Failed remote answer apply:', e);
         }
