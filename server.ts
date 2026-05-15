@@ -1,15 +1,62 @@
+import { loadEnvConfig } from '@next/env';
+// Synchronously bootstrap Next.js .env loading before server configurations initialize
+loadEnvConfig(process.cwd());
+
 import { createServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import next from 'next';
 import { connectDB } from './lib/db';
 import Message from './models/Message';
+import Room from './models/Room';
+import PushSubscription from './models/PushSubscription';
+import webpush from 'web-push';
 
 const dev = process.env.NODE_ENV !== 'production';
 const app = next({ dev });
 const handle = app.getRequestHandler();
 
-// Track online users: socketId → { userId, name, roomId }
+// Track online users within rooms: socketId → { userId, name, roomId }
 const onlineUsers = new Map<string, { userId: string; name: string; roomId: string }>();
+
+// GLOBAL PRESENCE TRACKING (Across all tabs/rooms)
+const userSocketsGlobal = new Map<string, Set<string>>(); // userId -> Set<socketId>
+const socketToUserGlobal = new Map<string, string>();      // socketId -> userId
+
+// Async utility: Delivers push payloads to a target user's active browser devices
+async function sendPushToUser(userId: string, payload: any) {
+  try {
+    const subscriptions = await PushSubscription.find({ userId });
+    if (!subscriptions || subscriptions.length === 0) return;
+
+    console.log(`[PushServer] Routing notice to ${userId} (${subscriptions.length} endpoints).`);
+    const payloadString = JSON.stringify(payload);
+
+    const dispatches = subscriptions.map(async (subDoc) => {
+      try {
+        const sub = {
+          endpoint: subDoc.subscription.endpoint,
+          keys: {
+            p256dh: subDoc.subscription.keys.p256dh,
+            auth: subDoc.subscription.keys.auth,
+          },
+        };
+        await webpush.sendNotification(sub, payloadString);
+      } catch (err: any) {
+        // Automatically clean up expired/revoked browser endpoints!
+        if (err.statusCode === 410 || err.statusCode === 404) {
+          console.log(`[PushServer] Pruning dead endpoint for user ${userId}.`);
+          await PushSubscription.deleteOne({ _id: subDoc._id });
+        } else {
+          console.error('[PushServer] Dispatch error:', err.message || err);
+        }
+      }
+    });
+
+    await Promise.all(dispatches);
+  } catch (err) {
+    console.error('[PushServer] Core dispatch pipeline failed:', err);
+  }
+}
 
 app.prepare().then(async () => {
   try {
@@ -17,6 +64,18 @@ app.prepare().then(async () => {
     console.log('> Connected to MongoDB for Custom Server');
   } catch (error) {
     console.error('> MongoDB Connection Error in Custom Server:', error);
+  }
+
+  // ── Native Web Push Initialization (Deferred until environment finishes load) ─────
+  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
+  const privateKey = process.env.VAPID_PRIVATE_KEY;
+  const contactEmail = process.env.VAPID_CONTACT_EMAIL || 'mailto:admin@chatapp.local';
+
+  if (publicKey && privateKey) {
+    webpush.setVapidDetails(contactEmail, publicKey, privateKey);
+    console.log('> WebPush VAPID environment ready.');
+  } else {
+    console.warn('> WebPush initialization SKIPPED: VAPID credentials missing.');
   }
 
   const httpServer = createServer((req, res) => handle(req, res));
@@ -31,12 +90,35 @@ app.prepare().then(async () => {
   io.on('connection', (socket: Socket) => {
     console.log('Socket connected:', socket.id);
 
+    // ── Global Presence ──────────────────────────────────────────────
+    socket.on('presence:register', ({ userId }) => {
+      if (!userId) return;
+      
+      socketToUserGlobal.set(socket.id, userId);
+      
+      if (!userSocketsGlobal.has(userId)) {
+        userSocketsGlobal.set(userId, new Set());
+        // First tab open for this user — broadcast dynamic ONLINE status globally
+        io.emit('user:global_online', { userId });
+      }
+      userSocketsGlobal.get(userId)!.add(socket.id);
+      
+      // Synchronize initial state back to the new client
+      socket.emit('presence:initial', Array.from(userSocketsGlobal.keys()));
+      console.log(`[Global] User registered: ${userId}. Sockets: ${userSocketsGlobal.get(userId)!.size}`);
+    });
+
     // ── Room management ──────────────────────────────────────────────
     socket.on('join:room', ({ roomId, userId, name }) => {
       socket.join(roomId);
       
       // Track user with room information
       onlineUsers.set(socket.id, { userId, name, roomId });
+
+      // Persist membership dynamically for push notification aggregation
+      Room.findByIdAndUpdate(roomId, { $addToSet: { members: userId } })
+        .exec()
+        .catch((err) => console.error('[Server] Membership sync error:', err));
       
       // Notify others in this room
       socket.to(roomId).emit('user:joined', { 
@@ -126,6 +208,50 @@ app.prepare().then(async () => {
         };
 
         io.to(roomId).emit('chat:message', payload);
+
+        // 📦 Web Push Integration: Deliver native alerts to offline members or members in other channels
+        (async () => {
+          try {
+            const room = await Room.findById(roomId).lean();
+            if (!room || !room.members) return;
+
+            // Identify users currently in this specific room's Socket group
+            const activeUsersInThisRoom = new Set<string>();
+            const activeSocketIds = io.sockets.adapter.rooms.get(roomId);
+            if (activeSocketIds) {
+              for (const sid of activeSocketIds) {
+                const tracking = onlineUsers.get(sid);
+                if (tracking) activeUsersInThisRoom.add(tracking.userId);
+              }
+            }
+
+            // Polish visual payload for DMs vs. Public Channels
+            const isDM = room.isDM || room.name.startsWith('dm:');
+            const displayTitle = isDM ? senderName : `${senderName} in #${room.name}`;
+            
+            let displayBody = content;
+            if (type === 'image') displayBody = '📷 Sent a photo';
+            else if (type === 'file') displayBody = '📁 Sent a file attachment';
+
+            const noticePayload = {
+              title: displayTitle,
+              body: displayBody,
+              icon: senderImage || '/avatar-placeholder.png',
+              url: `/chat/${roomId}`,
+              tag: `chat-room-${roomId}`,
+            };
+
+            // Deliver exclusively to other members who aren't currently focusing this room viewport
+            for (const member of room.members) {
+              const targetId = member.toString();
+              if (targetId !== senderId && !activeUsersInThisRoom.has(targetId)) {
+                await sendPushToUser(targetId, noticePayload);
+              }
+            }
+          } catch (pushErr) {
+            console.error('[Push Dispatcher] Failed background query:', pushErr);
+          }
+        })();
       } catch (err) {
         console.error('Message save error:', err);
         socket.emit('error', { message: 'Failed to send message' });
@@ -214,6 +340,18 @@ app.prepare().then(async () => {
     // Offer: caller → callee
     socket.on('call:offer', ({ to, from, offer, callerName, callerImage }) => {
       io.to(to).emit('call:incoming', { from, offer, callerName, callerImage });
+
+      // 📞 Native Push Delivery: Ring the callee's devices instantly
+      const recipient = onlineUsers.get(to);
+      if (recipient) {
+        sendPushToUser(recipient.userId, {
+          title: `Incoming Video Call`,
+          body: `${callerName} is calling you. Tap to answer!`,
+          icon: callerImage || '/avatar-placeholder.png',
+          url: `/chat/${recipient.roomId}`,
+          tag: `call-incoming`,
+        });
+      }
     });
 
     // Answer: callee → caller
@@ -238,6 +376,24 @@ app.prepare().then(async () => {
 
     // ── Disconnect ───────────────────────────────────────────────────
     socket.on('disconnect', () => {
+      // 1. Handle Global Presence Clean up
+      const userId = socketToUserGlobal.get(socket.id);
+      if (userId) {
+        const socketSet = userSocketsGlobal.get(userId);
+        if (socketSet) {
+          socketSet.delete(socket.id);
+          
+          if (socketSet.size === 0) {
+            userSocketsGlobal.delete(userId);
+            // Last tab closed — User went COMPLETELY offline globally!
+            io.emit('user:global_offline', { userId });
+            console.log(`[Global] User went offline: ${userId}`);
+          }
+        }
+        socketToUserGlobal.delete(socket.id);
+      }
+
+      // 2. Handle Room clean up
       const user = onlineUsers.get(socket.id);
       if (user) {
         const { roomId } = user;

@@ -10,36 +10,68 @@ export function useChat(roomId: string) {
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [onlineMembers, setOnlineMembers] = useState<OnlineMember[]>([]);
   
+  // Pagination State Matrix
+  const [hasMore, setHasMore] = useState<boolean>(true);
+  const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
+  
   const socket = getSocket();
 
-  // 1. Load message history with full metadata expansion
-  useEffect(() => {
+  // Highly scalable async fetch controller
+  const fetchMessages = useCallback(async (before?: string) => {
     if (!roomId) return;
+    try {
+      const url = `/api/messages?roomId=${roomId}&limit=50${before ? `&before=${before}` : ''}`;
+      const response = await fetch(url);
+      const data = await response.json();
 
-    fetch(`/api/messages?roomId=${roomId}`)
-      .then((r) => r.json())
-      .then((data) => {
-        if (Array.isArray(data)) {
-          setMessages(
-            data.map((m: any) => ({
-              _id: m._id,
-              senderId: m.sender?._id || 'unknown',
-              senderName: m.sender?.name || 'Deleted User',
-              senderImage: m.sender?.image,
-              content: m.content,
-              type: m.type || 'text',
-              fileUrl: m.fileUrl,
-              isEdited: m.isEdited,
-              reactions: m.reactions || [],
-              createdAt: m.createdAt,
-            }))
-          );
-        } else {
-          console.error('Invalid message response:', data);
-        }
-      })
-      .catch(error => console.error('Error loading messages:', error));
+      if (data && Array.isArray(data.messages)) {
+        const parsedBatch = data.messages.map((m: any) => ({
+          _id: m._id,
+          senderId: m.sender?._id || 'unknown',
+          senderName: m.sender?.name || 'Deleted User',
+          senderImage: m.sender?.image,
+          content: m.content,
+          type: m.type || 'text',
+          fileUrl: m.fileUrl,
+          isEdited: m.isEdited,
+          reactions: m.reactions || [],
+          createdAt: m.createdAt,
+        }));
+
+        setMessages((prev) => {
+          // If prepending, deduplicate by ID ensuring local updates don't duplicate
+          if (before) {
+            const existingIds = new Set(prev.map(item => item._id));
+            const filteredNew = parsedBatch.filter(item => !existingIds.has(item._id));
+            return [...filteredNew, ...prev];
+          }
+          return parsedBatch;
+        });
+
+        setHasMore(data.hasMore);
+      }
+    } catch (err) {
+      console.error('[useChat] History synchronization failed:', err);
+    }
   }, [roomId]);
+
+  // Trigger initial slice pull on component mount or room navigation
+  useEffect(() => {
+    setMessages([]);
+    setHasMore(true);
+    fetchMessages();
+  }, [roomId, fetchMessages]);
+
+  // Triggers historical load based on cursor pointer
+  const fetchMoreMessages = useCallback(async () => {
+    if (isLoadingMore || !hasMore || messages.length === 0) return;
+    setIsLoadingMore(true);
+
+    const oldestTime = messages[0].createdAt;
+    await fetchMessages(oldestTime.toString());
+    
+    setIsLoadingMore(false);
+  }, [isLoadingMore, hasMore, messages, fetchMessages]);
 
   // 2. Live Socket Lifecycle Binding (Chat + Edits + Deletes + Reactions)
   useEffect(() => {
@@ -159,6 +191,9 @@ export function useChat(roomId: string) {
     messages, 
     typingUsers, 
     onlineMembers, 
+    hasMore,
+    isLoadingMore,
+    fetchMoreMessages,
     sendMessage, 
     editMessage, 
     deleteMessage, 

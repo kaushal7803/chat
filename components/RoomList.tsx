@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import UserAvatar from './UserAvatar';
 import { Room } from '@/types';
+import { getSocket } from '@/lib/socket';
 
 interface RoomListProps {
   initialRooms: Room[];
@@ -21,6 +22,9 @@ export default function RoomList({ initialRooms }: RoomListProps) {
   const [roomSearchQuery, setRoomSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   
+  // Global Online User Tracking Set
+  const [globalOnlineUsers, setGlobalOnlineUsers] = useState<Set<string>>(new Set());
+  
   // User search for DM provision state
   const [userSearchQuery, setUserSearchQuery] = useState('');
   const [userSearchResults, setUserSearchResults] = useState<any[]>([]);
@@ -33,6 +37,46 @@ export default function RoomList({ initialRooms }: RoomListProps) {
   const [newRoomDesc, setNewRoomDesc] = useState('');
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState('');
+
+  // 🌐 Global Online Presence Sockets Setup
+  useEffect(() => {
+    if (!currentUserId) return;
+    
+    const socket = getSocket();
+    if (!socket.connected) socket.connect();
+    
+    // Register immediately with the Custom Server for global tracking
+    socket.emit('presence:register', { userId: currentUserId });
+    
+    // Load initial online census
+    socket.on('presence:initial', (userIds: string[]) => {
+      setGlobalOnlineUsers(new Set(userIds));
+    });
+    
+    // Track live logins/tab-opens
+    socket.on('user:global_online', ({ userId }: { userId: string }) => {
+      setGlobalOnlineUsers(prev => {
+        const updated = new Set(prev);
+        updated.add(userId);
+        return updated;
+      });
+    });
+    
+    // Track live logouts/tab-closes
+    socket.on('user:global_offline', ({ userId }: { userId: string }) => {
+      setGlobalOnlineUsers(prev => {
+        const updated = new Set(prev);
+        updated.delete(userId);
+        return updated;
+      });
+    });
+    
+    return () => {
+      socket.off('presence:initial');
+      socket.off('user:global_online');
+      socket.off('user:global_offline');
+    };
+  }, [currentUserId]);
 
   // Re-fetch rooms to capture live additions
   const fetchRooms = async () => {
@@ -152,17 +196,19 @@ export default function RoomList({ initialRooms }: RoomListProps) {
   // Resolves the remote partner information for a Direct Message room view
   const getDMDisplayData = (room: Room) => {
     if (!room.members || room.members.length === 0) {
-      return { name: 'Direct Message', image: undefined };
+      return { id: undefined, name: 'Direct Message', image: undefined };
     }
     
     // Filter for the member who ISN'T the currently authenticated user
     const partner = room.members.find(m => m._id !== currentUserId);
     if (!partner) {
       // If you are chatting with yourself, fallback gracefully
-      return { name: room.members[0]?.name || 'Private Chat', image: room.members[0]?.image };
+      const self = room.members[0];
+      return { id: self?._id, name: self?.name || 'Private Chat', image: self?.image };
     }
     
     return {
+      id: partner._id,
       name: partner.name,
       image: partner.image
     };
@@ -235,7 +281,12 @@ export default function RoomList({ initialRooms }: RoomListProps) {
                   onClick={() => handleStartDM(user._id)}
                   className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-indigo-50 dark:hover:bg-zinc-800 text-left transition"
                 >
-                  <UserAvatar name={user.name} image={user.image} size="sm" />
+                  <UserAvatar 
+                    name={user.name} 
+                    image={user.image} 
+                    size="sm" 
+                    status={globalOnlineUsers.has(user._id) ? 'online' : 'offline'} 
+                  />
                   <div className="truncate">
                     <p className="text-sm font-bold text-slate-800 dark:text-slate-200 truncate">{user.name}</p>
                     <p className="text-xs text-slate-500 dark:text-zinc-400 truncate">{user.email}</p>
@@ -327,7 +378,9 @@ export default function RoomList({ initialRooms }: RoomListProps) {
           ) : (
             activeDMRooms.map((room) => {
               const isActive = pathname === `/chat/${room._id}`;
-              const { name, image } = getDMDisplayData(room);
+              const { id: partnerId, name, image } = getDMDisplayData(room);
+              const isPartnerOnline = partnerId ? globalOnlineUsers.has(partnerId) : false;
+              
               return (
                 <Link
                   key={room._id}
@@ -339,15 +392,20 @@ export default function RoomList({ initialRooms }: RoomListProps) {
                   }`}
                 >
                   <div className="flex-shrink-0">
-                    <UserAvatar name={name} image={image} size="sm" />
+                    <UserAvatar 
+                      name={name} 
+                      image={image} 
+                      size="sm" 
+                      status={isPartnerOnline ? 'online' : 'offline'}
+                    />
                   </div>
                   <div className="truncate flex-1">
                     <p className={`font-semibold truncate text-sm ${isActive ? 'text-white' : 'text-slate-900 dark:text-white'}`}>
                       {name}
                     </p>
                     <p className={`text-xs truncate flex items-center gap-1.5 ${isActive ? 'text-indigo-100' : 'text-slate-500 dark:text-zinc-500'}`}>
-                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full inline-block animate-pulse"></span>
-                      Active DM
+                      <span className={`w-1.5 h-1.5 rounded-full inline-block ${isPartnerOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400 dark:bg-zinc-600'}`}></span>
+                      {isPartnerOnline ? 'Online' : 'Offline'}
                     </p>
                   </div>
                 </Link>

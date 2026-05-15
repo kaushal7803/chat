@@ -6,6 +6,7 @@ import { connectDB } from '@/lib/db';
 import Room from '@/models/Room';
 import User from '@/models/User'; // Explicit import for mongoose populating
 import RoomList from '@/components/RoomList';
+import PushNotificationManager from '@/components/PushNotificationManager';
 
 export default async function ChatLayout({
   children,
@@ -52,6 +53,9 @@ export default async function ChatLayout({
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-white dark:bg-zinc-950 font-sans">
+      {/* Headless Push Services Wrapper */}
+      <PushNotificationManager />
+
       {/* Left Sidebar */}
       <RoomList initialRooms={rooms} />
 

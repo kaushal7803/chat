@@ -12,6 +12,9 @@ interface ChatWindowProps {
   messages: ChatMessage[];
   typingUsers: string[];
   onlineMembers: OnlineMember[];
+  hasMore: boolean;
+  isLoadingMore: boolean;
+  fetchMoreMessages: () => Promise<void>;
   sendMessage: (content: string, type?: 'text' | 'image' | 'file', fileUrl?: string) => void;
   editMessage: (messageId: string, newContent: string) => void;
   deleteMessage: (messageId: string) => void;
@@ -29,6 +32,9 @@ export default function ChatWindow({
   messages,
   typingUsers,
   onlineMembers,
+  hasMore,
+  isLoadingMore,
+  fetchMoreMessages,
   sendMessage,
   editMessage,
   deleteMessage,
@@ -51,22 +57,82 @@ export default function ChatWindow({
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const loadMoreSentinelRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Track count and last ID to prevent prepend auto-scroll jumping!
+  const prevMessagesCountRef = useRef(messages.length);
+  const prevLastMessageIdRef = useRef(messages[messages.length - 1]?._id);
 
   // Filter online members to only show OTHERS (not current user)
   const otherOnlineMembers = onlineMembers.filter(
     (member) => member.userId !== currentUserId
   );
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  const scrollToBottom = (behavior: ScrollBehavior = 'smooth') => {
+    messagesEndRef.current?.scrollIntoView({ behavior });
   };
 
-  // Auto scroll to bottom when messages or typing state changes
+  // 🟢 NATIVE SCROLL SHIELD: Auto-scroll ONLY when new messages are appended,
+  // preventing UI snap-backs when prepending historical content!
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, typingUsers]);
+    const lastMsg = messages[messages.length - 1];
+    
+    if (prevMessagesCountRef.current === 0 && messages.length > 0) {
+      // Initial room opening load
+      scrollToBottom('auto');
+    } else if (lastMsg && lastMsg._id !== prevLastMessageIdRef.current) {
+      // New message arrived at the very bottom
+      scrollToBottom('smooth');
+    }
+
+    prevMessagesCountRef.current = messages.length;
+    prevLastMessageIdRef.current = lastMsg?._id;
+  }, [messages]);
+
+  // Auto-scroll when remote peer starts typing (adds temporary footer spacing)
+  useEffect(() => {
+    if (typingUsers.length > 0) {
+      scrollToBottom('smooth');
+    }
+  }, [typingUsers]);
+
+  // 🟢 INFINITE INTERSECTION SYSTEM: Listens for sentinel visibility
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting && hasMore && !isLoadingMore) {
+          // Store original scroll height before prepending to anchor placement manually if needed
+          const container = scrollContainerRef.current;
+          const originalScrollHeight = container ? container.scrollHeight : 0;
+
+          fetchMoreMessages().then(() => {
+            // Standard scroll anchor fallback verification
+            setTimeout(() => {
+              if (container) {
+                const newScrollHeight = container.scrollHeight;
+                const diff = newScrollHeight - originalScrollHeight;
+                if (diff > 0) {
+                  // Lock viewport scroll to match previous top offset
+                  container.scrollTop = container.scrollTop + diff;
+                }
+              }
+            }, 10);
+          });
+        }
+      },
+      { threshold: 0.1, root: scrollContainerRef.current }
+    );
+
+    const sentinel = loadMoreSentinelRef.current;
+    if (sentinel) observer.observe(sentinel);
+
+    return () => {
+      if (sentinel) observer.unobserve(sentinel);
+    };
+  }, [fetchMoreMessages, hasMore, isLoadingMore]);
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
@@ -199,7 +265,30 @@ export default function ChatWindow({
       </div>
 
       {/* 2. The Core Feed Display Container */}
-      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-4 bg-slate-50/50 dark:bg-zinc-950/30 select-none">
+      <div 
+        ref={scrollContainerRef}
+        className="flex-1 overflow-y-auto px-6 py-6 space-y-4 bg-slate-50/50 dark:bg-zinc-950/30 select-none"
+        style={{ overflowAnchor: 'auto' }} // Activate browser-native smooth prepend anchoring!
+      >
+        {/* Sentinel Trigger: Automatically prompts loading block when scrolled into view */}
+        {hasMore && (
+          <div 
+            ref={loadMoreSentinelRef} 
+            className="w-full flex justify-center py-4 opacity-90 transition-opacity duration-200"
+          >
+            {isLoadingMore ? (
+              <div className="flex items-center gap-2 bg-slate-100/80 dark:bg-zinc-900/80 border border-slate-200/50 dark:border-zinc-800 px-4 py-2 rounded-full shadow-sm backdrop-blur-md animate-pulse">
+                <svg className="animate-spin h-4 w-4 text-indigo-500 dark:text-cyan-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span className="text-[11px] font-bold tracking-wider text-slate-500 dark:text-zinc-400 uppercase">Syncing historical feeds...</span>
+              </div>
+            ) : (
+              <span className="text-[9px] font-semibold text-slate-400/80 dark:text-zinc-600 uppercase tracking-widest">▲ Scroll upward to pull history ▲</span>
+            )}
+          </div>
+        )}
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center opacity-70 py-10">
             <div className="w-16 h-16 rounded-2xl bg-slate-100 dark:bg-zinc-800 flex items-center justify-center text-slate-400 mb-3">

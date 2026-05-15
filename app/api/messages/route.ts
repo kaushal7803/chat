@@ -22,13 +22,24 @@ export async function GET(req: NextRequest) {
   if (before) query.createdAt = { $lt: new Date(before) };
 
   try {
+    // Perform 1-element lookahead query to verify if additional historical messages remain!
     const messages = await Message.find(query)
       .sort({ createdAt: -1 })
-      .limit(limit)
+      .limit(limit + 1)
       .populate('sender', 'name image')
       .lean();
 
-    return NextResponse.json(messages.reverse());
+    const hasMore = messages.length > limit;
+    
+    // Trim the lookahead buffer element before delivering to client
+    if (hasMore) {
+      messages.pop();
+    }
+
+    return NextResponse.json({
+      messages: messages.reverse(),
+      hasMore,
+    });
   } catch (error) {
     console.error('Fetch messages error:', error);
     return NextResponse.json({ error: 'Failed to fetch messages' }, { status: 500 });

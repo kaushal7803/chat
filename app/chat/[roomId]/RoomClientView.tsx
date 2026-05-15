@@ -21,6 +21,9 @@ export default function RoomClientView({ room }: RoomClientViewProps) {
     messages, 
     typingUsers, 
     onlineMembers, 
+    hasMore,
+    isLoadingMore,
+    fetchMoreMessages,
     sendMessage, 
     editMessage,
     deleteMessage,
@@ -73,6 +76,9 @@ export default function RoomClientView({ room }: RoomClientViewProps) {
         messages={messages}
         typingUsers={typingUsers}
         onlineMembers={onlineMembers}
+        hasMore={hasMore}
+        isLoadingMore={isLoadingMore}
+        fetchMoreMessages={fetchMoreMessages}
         sendMessage={sendMessage}
         editMessage={editMessage}
         deleteMessage={deleteMessage}
