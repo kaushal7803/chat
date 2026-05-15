@@ -22,6 +22,9 @@ export default function RoomClientView({ room }: RoomClientViewProps) {
     typingUsers, 
     onlineMembers, 
     sendMessage, 
+    editMessage,
+    deleteMessage,
+    reactToMessage,
     sendTyping 
   } = useChat(room.id);
 
@@ -71,6 +74,9 @@ export default function RoomClientView({ room }: RoomClientViewProps) {
         typingUsers={typingUsers}
         onlineMembers={onlineMembers}
         sendMessage={sendMessage}
+        editMessage={editMessage}
+        deleteMessage={deleteMessage}
+        reactToMessage={reactToMessage}
         sendTyping={sendTyping}
         onStartCall={startCall}
         isCallActive={callState !== 'idle'}

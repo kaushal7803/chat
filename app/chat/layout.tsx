@@ -17,11 +17,35 @@ export default async function ChatLayout({
 
   await connectDB();
   
-  // Explicitly fetch existing rooms
-  const roomsData = await Room.find()
-    .sort({ createdAt: -1 })
-    .populate('createdBy', 'name image')
-    .lean();
+  const userIdStr = (session.user as any).id;
+  
+  let roomsData: any[] = [];
+  try {
+    const mongoose = await import('mongoose');
+    const userId = new mongoose.default.Types.ObjectId(userIdStr);
+    
+    // Explicitly fetch existing rooms, filtering private DMs robustly:
+    // 1. Public channels: isDM is not true AND name does NOT match "dm:" regex prefix
+    // 2. Direct Messages: Matches (isDM true OR "dm:" name prefix) AND current user is a member
+    roomsData = await Room.find({
+      $or: [
+        { isDM: { $ne: true }, name: { $not: /^dm:/ } },
+        {
+          $or: [
+            { isDM: true },
+            { name: /^dm:/ }
+          ],
+          members: userId
+        }
+      ]
+    })
+      .sort({ createdAt: -1 })
+      .populate('createdBy', 'name image')
+      .populate('members', 'name email image')
+      .lean();
+  } catch (err) {
+    console.error("Layout data load error:", err);
+  }
 
   // Parse mongoose documents to plain object so it can be passed to client components
   const rooms = JSON.parse(JSON.stringify(roomsData));

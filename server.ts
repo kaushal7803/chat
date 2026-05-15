@@ -101,13 +101,14 @@ app.prepare().then(async () => {
     });
 
     // ── Chat messages ─────────────────────────────────────────────────
-    socket.on('chat:message', async ({ roomId, senderId, content, senderName, senderImage }) => {
+    socket.on('chat:message', async ({ roomId, senderId, content, senderName, senderImage, type = 'text', fileUrl }) => {
       try {
         const message = await Message.create({
           roomId,
           sender: senderId,
           content,
-          type: 'text',
+          type,
+          fileUrl,
         });
 
         const payload = {
@@ -117,6 +118,10 @@ app.prepare().then(async () => {
           senderName,
           senderImage,
           content,
+          type,
+          fileUrl,
+          isEdited: false,
+          reactions: [],
           createdAt: message.createdAt,
         };
 
@@ -124,6 +129,79 @@ app.prepare().then(async () => {
       } catch (err) {
         console.error('Message save error:', err);
         socket.emit('error', { message: 'Failed to send message' });
+      }
+    });
+
+    // Edit Message
+    socket.on('chat:edit_message', async ({ roomId, messageId, content }) => {
+      try {
+        await Message.findByIdAndUpdate(messageId, {
+          content,
+          isEdited: true,
+        });
+
+        io.to(roomId).emit('chat:message_edited', { messageId, content });
+      } catch (err) {
+        console.error('Message edit error:', err);
+      }
+    });
+
+    // Delete Message (Mask as system)
+    socket.on('chat:delete_message', async ({ roomId, messageId }) => {
+      try {
+        await Message.findByIdAndUpdate(messageId, {
+          content: '🚫 This message was deleted.',
+          type: 'system',
+          $unset: { fileUrl: 1 }
+        });
+
+        io.to(roomId).emit('chat:message_deleted', { messageId });
+      } catch (err) {
+        console.error('Message delete error:', err);
+      }
+    });
+
+    // React to Message
+    socket.on('chat:react_message', async ({ roomId, messageId, emoji, userId }) => {
+      try {
+        const message = await Message.findById(messageId);
+        if (!message) return;
+
+        // Initialize reactions array if missing
+        if (!message.reactions) message.reactions = [];
+
+        const existingReaction = message.reactions.find(r => r.emoji === emoji);
+
+        if (existingReaction) {
+          const userIndex = existingReaction.users.indexOf(userId);
+          if (userIndex > -1) {
+            // User already reacted, so TOGGLE OFF (pull user)
+            existingReaction.users.splice(userIndex, 1);
+          } else {
+            // User has not reacted, TOGGLE ON (push user)
+            existingReaction.users.push(userId);
+          }
+
+          // If user count for this reaction is now zero, clean it up
+          if (existingReaction.users.length === 0) {
+            message.reactions = message.reactions.filter(r => r.emoji !== emoji);
+          }
+        } else {
+          // Add fresh reaction array entry
+          message.reactions.push({ emoji, users: [userId] });
+        }
+
+        await message.save();
+
+        // Map model output to string array structure for frontend
+        const serializedReactions = message.reactions.map(r => ({
+          emoji: r.emoji,
+          users: r.users.map(id => id.toString())
+        }));
+
+        io.to(roomId).emit('chat:message_reacted', { messageId, reactions: serializedReactions });
+      } catch (err) {
+        console.error('Reaction error:', err);
       }
     });
 

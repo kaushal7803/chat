@@ -1208,3 +1208,46 @@ When using this plan with an AI assistant:
 ---
 
 *Generated for Next.js 14 · NextAuth.js v4 · Socket.io v4 · MongoDB 7 · WebRTC (browser-native)*
+
+---
+
+## 🚀 The Ultimate Evolution Roadmap
+
+### 🎥 Level 1: Media & WebRTC Upgrades (Completed ✓)
+1. **Switch from Voice to Video Calls**
+   * *What it adds:* Allow users to see each other during calls.
+   * *Complexity:* **Easy.** We just change the browser request from `{ audio: true }` to `{ audio: true, video: true }` and add `<video>` components for the Local and Remote stream.
+2. **Active In-Call Controls (Mute & Disable Video)**
+   * *What it adds:* Toggle microphone and camera on-the-fly.
+   * *Complexity:* **Easy.** Hooking up buttons inside `VideoCall.tsx`.
+3. **Group Voice Channels (Discord Style)**
+   * *What it adds:* Let everyone in the room talk simultaneously, rather than just 1-to-1 calls.
+   * *Complexity:* **Medium-High.** Requires mesh networks or lightweight WebRTC SFUs.
+
+### 💬 Level 2: Chat & Social Expansion (Current Focus 🚀)
+1. **Direct Messages (1-to-1 Private Chats)**
+   * *What it adds:* A search bar in the sidebar to find other users on the platform and start private conversations.
+   * *Complexity:* **Medium.** We add a `/api/users` lookup route and flag certain database rooms as `isDM: true` hidden from the general public sidebar.
+2. **Rich Media Attachments (Images & Files)**
+   * *What it adds:* Drag-and-drop or attach files/images into the chat window to share.
+   * *Complexity:* **Medium.** Involves generating upload endpoints and rendering images directly in existing CSS bubble feeds.
+3. **Message Reactions & Actions**
+   * *What it adds:* Right-click context menus to Edit or Delete messages, and Emoji reaction overlays.
+   * *Complexity:* **Medium.** Requires simple schema updates to the `Message.ts` schema to store edits and reaction arrays.
+
+### 🔔 Level 3: Professional Polish & Push
+1. **Desktop Push Notifications (Web Push & Service Workers)**
+   * *What it adds:* Ring computer or phone with a real notification if someone calls or messages you, even if the browser tab is closed!
+   * *Complexity:* **Medium-High.** Sets up Service Workers and VAPID keys to trigger OS-level native notifications.
+2. **Global Online / Offline Statuses**
+   * *What it adds:* See exactly when your friends are active on the app anywhere, not just when you share the exact same chat segment.
+   * *Complexity:* **Medium.** Moving the Socket tracking map slightly more global.
+
+### 🛠 Level 4: Scalability (Production-Ready)
+1. **Deploy Dynamic TURN Servers**
+   * *What it adds:* Guarantees your WebRTC voice/video calls always connect over public internet, even behind strict enterprise firewalls or 5G NATs.
+   * *Complexity:* **Medium.** Switching from public STUN addresses to paid dynamic relays (e.g., Metered.ca or Twilio).
+2. **Scalable Socket Adapter (Redis)**
+   * *What it adds:* Allows you to scale your app across multiple distinct servers simultaneously without losing messages.
+   * *Complexity:* **High.** Requires adding a Redis caching broker to bridge Socket.io instances.
+
